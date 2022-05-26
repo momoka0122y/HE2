@@ -38,6 +38,10 @@ struct Notification {
 };
 
 
+
+
+
+
 void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
               const char *hostname) {
   puts("request A");
