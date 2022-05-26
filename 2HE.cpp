@@ -42,7 +42,7 @@ struct Notification {
 };
 
 
-void getaddr(const char *hostname, struct addrinfo *addrlist, const int isIPv4) {
+void getaddr(const char *hostname, struct addrinfo **addrlist, const int isIPv4) {
   struct addrinfo hints;
   char host[256];
 
@@ -54,11 +54,11 @@ void getaddr(const char *hostname, struct addrinfo *addrlist, const int isIPv4) 
   }
   hints.ai_socktype = SOCK_STREAM;
 
-  int ret = getaddrinfo(hostname, "80", &hints, &addrlist);
+  int ret = getaddrinfo(hostname, "80", &hints, addrlist);
 
   struct addrinfo *tmp;
   char hostt[256];
-  for (tmp = addrlist; tmp != NULL; tmp = tmp->ai_next) {
+  for (tmp = *addrlist; tmp != NULL; tmp = tmp->ai_next) {
     getnameinfo(tmp->ai_addr, tmp->ai_addrlen, hostt, sizeof(host), NULL, 0,
                 NI_NUMERICHOST);
     puts(hostt);
@@ -79,7 +79,7 @@ void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   {
     std::lock_guard<std::mutex> lk(notif.m);
     if (notif.status == State::WaitingBoth) {
-      getaddr(hostname, notif.addrlist_IPv4, 1);
+      getaddr(hostname, &notif.addrlist_IPv4, 1);
       // addIPv4list(notif.addrlist, notif.addrlist_IPv4);
       notif.status = State::WaitingAAAA;
     }
@@ -96,7 +96,7 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
     std::lock_guard<std::mutex> lk(notif.m);
     if (notif.status == State::WaitingBoth ||
         notif.status == State::WaitingAAAA) {
-      getaddr(hostname, notif.addrlist_IPv6, 0);
+      getaddr(hostname, &notif.addrlist_IPv6, 0);
       notif.status = State::SendIpv6;
       // struct addrinfo *tmp;
       // char host[256];
