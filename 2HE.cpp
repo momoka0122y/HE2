@@ -13,6 +13,13 @@
 
 using namespace std::literals::chrono_literals;
 
+// from RFC8305 section8 Summary of Configurable Values
+// https://datatracker.ietf.org/doc/html/rfc8305#section-8 
+
+// The time to wait for a AAAA response after receiving an A response.
+#define RESOLUTION_DELAY 50ms
+
+
 /*
         State change diagram
         WaitingBoth : waiting A or AAAA after requesting A and AAAA
@@ -75,21 +82,34 @@ void getaddr(const char *hostname, struct addrinfo **addrlist, const int isIPv4)
 }
 
 
+// WaitingBoth             -> WaitingAAAA : if A is received
+// SendIPv6                -> SendBoth : if A is received 
 void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
               const char *hostname) {
   puts("request A");
   std::this_thread::sleep_for(waitTime);
   {
     std::lock_guard<std::mutex> lk(notif.m);
-    if (notif.status == State::WaitingBoth) {
+    if (notif.status == State::WaitingBoth ||
+        notif.status == State::SendIPv6) {
       getaddr(hostname, &notif.addrlist_IPv4, 1);
       // addIPv4list(notif.addrlist, notif.addrlist_IPv4);
-      notif.status = State::WaitingAAAA;
+      if (notif.status == State::WaitingBoth) {
+        notif.status = State::WaitingAAAA;
+      }else if ( notif.status == State::SendIPv6 ){
+        notif.status = State::SendBoth;
+      }
+      
     }
   }
   puts("receive A");
   notif.cv.notify_one();
 }
+
+
+// WaitingBoth             -> SendIPv6 : if AAAA is received
+// WaitingAAAA             -> SendBoth : if AAAA is received
+// SendIPv4WaitingAAAA     -> SendBoth : if AAAA is received
 
 void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
               const char *hostname) {
@@ -98,21 +118,25 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   {
     std::lock_guard<std::mutex> lk(notif.m);
     if (notif.status == State::WaitingBoth ||
-        notif.status == State::WaitingAAAA) {
+        notif.status == State::WaitingAAAA ||
+        notif.status == State::SendIPv4WaitingAAAA) {
       getaddr(hostname, &notif.addrlist_IPv6, 0);
       notif.status = State::SendIPv6;
-      // struct addrinfo *tmp;
-      // char host[256];
-      // for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
-      //   getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
-      //               NI_NUMERICHOST);
-      //   puts(host);
-      // }
 
-    }
+      if (notif.status == State::WaitingBoth ) {
+        notif.status = State::SendIPv6;
+      }else if ( notif.status == State::WaitingAAAA ||
+        notif.status == State::SendIPv4WaitingAAAA ){
+        notif.status = State::SendBoth;
+      }
+      }
+
+
   }
   puts("receive AAAA");
   notif.cv.notify_one();
+
+
 }
 
 
@@ -132,6 +156,8 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
     notif.cv.wait(lk, [&] { return notif.status != State::WaitingBoth; });
   }
   // A is received so wait 50ms
+    // WaitingAAAA             -> SendBoth : if AAAA is received
+    // WaitingAAAA             -> SendIPv4WaitingAAAA : if timeout
   if (notif.status == State::WaitingAAAA) {
     const auto waitIpv6Time = 50ms;
     std::cout << "wait ipv6 " << waitIpv6Time.count() << "ms" << std::endl;
