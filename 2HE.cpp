@@ -16,19 +16,22 @@ using namespace std::literals::chrono_literals;
 /*
         State change diagram
         WaitingBoth : waiting A or AAAA after requesting A and AAAA
-        WaitingBoth -> SendIPv6 : if AAAA is received
-        WaitingBoth -> WaitingAAAA : if A is received
-        WaitingAAAA -> SendIPv6 : if AAAA is received
-        WaitingAAAA -> SendIPv4 : if timeout
-        SendIPv6    -> SendBoth : if A is received
-        SendIPv4    -> SendBoth : if AAAA is received
+        WaitingBoth             -> SendIPv6 : if AAAA is received
+        WaitingBoth             -> WaitingAAAA : if A is received
+        WaitingAAAA             -> SendBoth : if AAAA is received
+        WaitingAAAA             -> SendIPv4WaitingAAAA : if timeout
+        SendIPv6                -> SendBoth : if A is received
+        SendIPv4WaitingAAAA     -> SendBoth : if AAAA is received
+                                -> Connected
 */
+
 enum class State {
   WaitingBoth,
   WaitingAAAA,
-  SendIpv4,
-  SendIpv6,
+  SendIPv4WaitingAAAA,
+  SendIPv6,
   SendBoth,
+  Connected,
 };
 
 
@@ -97,7 +100,7 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
     if (notif.status == State::WaitingBoth ||
         notif.status == State::WaitingAAAA) {
       getaddr(hostname, &notif.addrlist_IPv6, 0);
-      notif.status = State::SendIpv6;
+      notif.status = State::SendIPv6;
       // struct addrinfo *tmp;
       // char host[256];
       // for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
@@ -135,11 +138,11 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
     {
       std::unique_lock<std::mutex> lk(notif.m);
       if (notif.cv.wait_for(lk, waitIpv6Time,
-                            [&] { return notif.status == State::SendIpv6; })) {
+                            [&] { return notif.status == State::SendIPv6; })) {
         puts("receive ipv6");
       } else {
         puts("timeout");
-        notif.status = State::SendIpv4;
+        notif.status = State::SendIPv4WaitingAAAA;
       }
     }
   }
@@ -147,7 +150,7 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
   char host[256];
   int fd = -1;
   switch (notif.status) {
-  case State::SendIpv4:
+  case State::SendIPv4WaitingAAAA:
     puts("ipv4 syn");
     for (tmp = notif.addrlist_IPv4; tmp != NULL; tmp = tmp->ai_next) {
       getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
@@ -171,7 +174,7 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
       break;
     }
     break;
-  case State::SendIpv6:
+  case State::SendIPv6:
     puts("ipv6 syn");
     for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
       getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
