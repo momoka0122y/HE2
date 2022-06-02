@@ -1,4 +1,4 @@
-// g++ -std=c++14 2HE.cpp -lpthread
+// g++ -std=c++14 2HE.cpp -lpthread -g
 #include <arpa/inet.h>
 #include <condition_variable>
 #include <errno.h>
@@ -17,7 +17,10 @@ using namespace std::literals::chrono_literals;
 // https://datatracker.ietf.org/doc/html/rfc8305#section-8 
 
 // The time to wait for a AAAA response after receiving an A response.
-#define RESOLUTION_DELAY 50ms
+#define RESOLUTION_DELAY            50ms
+
+// The time to wait between connection attempts
+#define CONNECTION_ATTEMPT_DELAY   250ms
 
 
 /*
@@ -82,6 +85,11 @@ void getaddr(const char *hostname, struct addrinfo **addrlist, const int isIPv4)
 }
 
 
+void connect_to() {
+  printf("connect to address\n");
+}
+
+
 // WaitingBoth             -> WaitingAAAA : if A is received
 // SendIPv6                -> SendBoth : if A is received 
 void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
@@ -105,32 +113,89 @@ void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   puts("receive A");
   notif.cv.notify_one();
 
-  struct addrinfo *tmp;
-  char host[256];
-  int fd = -1;
-  puts("ipv4 syn");
-  for (tmp = notif.addrlist_IPv4; tmp != NULL; tmp = tmp->ai_next) {
-    getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
-                NI_NUMERICHOST);
-    puts(host);
-  }
-  for (tmp = notif.addrlist_IPv4; tmp != NULL; tmp = tmp->ai_next) {
-    printf("start connect IPv4 \n");
-    fd = socket(tmp->ai_family, tmp->ai_socktype, tmp->ai_protocol);
-    if (fd == -1) {
-      continue;
+
+
+  // SendIPv4WaitingAAAA, SendBoth のときに送る。
+
+  //  WaitingAAAA ならまつ
+  if (notif.status == State::WaitingAAAA) {
+    // std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
+    {
+      std::unique_lock<std::mutex> lk(notif.m);
+      notif.cv.wait(lk, [&] { return notif.status == State::SendIPv4WaitingAAAA 
+                                  || notif.status == State::WaitingBoth; });
     }
-    if (connect(fd, tmp->ai_addr, (socklen_t)tmp->ai_addrlen) != 0) {
-      fprintf(stderr, "connect: %s\n", strerror(errno));
-    } else {
-      printf("connected to ");
-      getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
-                NI_NUMERICHOST);
-      puts(host);
-    }
-    break;
   }
-}
+
+  if (notif.status == State::SendIPv4WaitingAAAA ) {
+    {
+      std::lock_guard<std::mutex> lk(notif.m);
+        connect_to();
+    }
+  }
+
+  while ( 1 ) {
+
+    {
+      std::unique_lock<std::mutex> lk(notif.m);
+      if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
+                            [&] { return notif.status == State::Connected; })) {
+        puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
+      } else {
+        puts("CONNECTION_ATTEMPT_DELAY timeout");
+        
+        if (notif.status == State::SendIPv4WaitingAAAA ) {
+          {
+            std::lock_guard<std::mutex> lk(notif.m);
+            connect_to();
+          }
+        }else if (notif.status == State::WaitingBoth){
+          if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
+                                [&] { return notif.status == State::Connected; })) {
+            puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
+          } else {
+            puts("CONNECTION_ATTEMPT_DELAY timeout");
+              connect_to();
+            }
+          }
+        }
+      }
+      break;
+
+    }
+
+    
+  }
+
+
+
+
+  // struct addrinfo *tmp;
+  // char host[256];
+  // int fd = -1;
+  // puts("ipv4 syn");
+  // for (tmp = notif.addrlist_IPv4; tmp != NULL; tmp = tmp->ai_next) {
+  //   getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
+  //               NI_NUMERICHOST);
+  //   puts(host);
+  // }
+  // for (tmp = notif.addrlist_IPv4; tmp != NULL; tmp = tmp->ai_next) {
+  //   printf("start connect IPv4 \n");
+  //   fd = socket(tmp->ai_family, tmp->ai_socktype, tmp->ai_protocol);
+  //   if (fd == -1) {
+  //     continue;
+  //   }
+  //   if (connect(fd, tmp->ai_addr, (socklen_t)tmp->ai_addrlen) != 0) {
+  //     fprintf(stderr, "connect: %s\n", strerror(errno));
+  //   } else {
+  //     printf("connected to ");
+  //     getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
+  //               NI_NUMERICHOST);
+  //     puts(host);
+  //   }
+  //   break;
+  // }
+
 
 
 // WaitingBoth             -> SendIPv6 : if AAAA is received
@@ -162,32 +227,51 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   puts("receive AAAA");
   notif.cv.notify_one();
 
-  struct addrinfo *tmp;
-  char host[256];
-  int fd = -1;
-  puts("ipv6 syn");
-  for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
-    getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
-                NI_NUMERICHOST);
-    puts(host);
-  }
-  for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
-    printf("start connect IP6 \n");
-    fd = socket(tmp->ai_family, tmp->ai_socktype, tmp->ai_protocol);
-    if (fd == -1) {
-      continue;
-    }
-    if (connect(fd, tmp->ai_addr, (socklen_t)tmp->ai_addrlen) != 0) {
-      fprintf(stderr, "connect: %s\n", strerror(errno));
-    } else {
-      printf("connected to ");
-      getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
-                NI_NUMERICHOST);
-      puts(host);
-    }
 
-    break;
-  }
+
+  // 今 SendIPv6, SendBoth のどちらか。
+  // もしSendIPv6なら
+  // SendIPv6  -> SendBoth : if A is received
+
+  // すぐにconnect初めていい
+
+  // ひとつ目にconnect
+  connect_to();
+
+  // 250ms まつ、　もし SendBoth ならさらに 250msまつ。
+
+  // 次にconnect
+
+
+
+
+
+  // struct addrinfo *tmp;
+  // char host[256];
+  // int fd = -1;
+  // puts("ipv6 syn");
+  // for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
+  //   getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
+  //               NI_NUMERICHOST);
+  //   puts(host);
+  // }
+  // for (tmp = notif.addrlist_IPv6; tmp != NULL; tmp = tmp->ai_next) {
+  //   printf("start connect IP6 \n");
+  //   fd = socket(tmp->ai_family, tmp->ai_socktype, tmp->ai_protocol);
+  //   if (fd == -1) {
+  //     continue;
+  //   }
+  //   if (connect(fd, tmp->ai_addr, (socklen_t)tmp->ai_addrlen) != 0) {
+  //     fprintf(stderr, "connect: %s\n", strerror(errno));
+  //   } else {
+  //     printf("connected to ");
+  //     getnameinfo(tmp->ai_addr, tmp->ai_addrlen, host, sizeof(host), NULL, 0,
+  //               NI_NUMERICHOST);
+  //     puts(host);
+  //   }
+
+  //   break;
+  // }
 }
 
 
@@ -210,11 +294,10 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
     // WaitingAAAA             -> SendBoth : if AAAA is received
     // WaitingAAAA             -> SendIPv4WaitingAAAA : if timeout
   if (notif.status == State::WaitingAAAA) {
-    const auto waitIpv6Time = 50ms;
-    std::cout << "wait ipv6 " << waitIpv6Time.count() << "ms" << std::endl;
+    std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
     {
       std::unique_lock<std::mutex> lk(notif.m);
-      if (notif.cv.wait_for(lk, waitIpv6Time,
+      if (notif.cv.wait_for(lk, RESOLUTION_DELAY,
                             [&] { return notif.status == State::SendIPv6; })) {
         puts("receive ipv6");
       } else {
@@ -241,7 +324,7 @@ int main(int argc, char *argv[]) {
   puts("case 1. AAAA is fast so send ipv6 syn");
   happyEyeball2(2000ms, 1000ms, hostname);
   puts("case 2. A is fast so send ipv4 syn");
-  happyEyeball2(1000ms, 2000ms, hostname);
+  happyEyeball2(1000ms, 200000ms, hostname);
   puts("case 3. A is a little fast so wait AAAA and send ipv6 syn");
   happyEyeball2(1000ms, 1010ms, hostname);
 }
