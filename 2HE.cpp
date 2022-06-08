@@ -123,74 +123,68 @@ void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   std::this_thread::sleep_for(waitTime);
   {
     std::lock_guard<std::mutex> lk(notif.m);
-    if (notif.status == State::WaitingBoth ||
-        notif.status == State::SendIPv6) {
-      getaddr(hostname, &notif.addrlist_IPv4, 1);
-      // addIPv4list(notif.addrlist, notif.addrlist_IPv4);
-      if (notif.status == State::WaitingBoth) {
-        notif.status = State::WaitingAAAA;
-      }else if ( notif.status == State::SendIPv6 ){
-        notif.status = State::SendBoth;
-      }
-      
+    if (notif.status != State::WaitingBoth &&
+        notif.status != State::SendIPv6) {
+      return;
+    } 
+    
+    getaddr(hostname, &notif.addrlist_IPv4, 1);
+    // addIPv4list(notif.addrlist, notif.addrlist_IPv4);
+    if (notif.status == State::WaitingBoth) {
+      notif.status = State::WaitingAAAA;
+    }else if ( notif.status == State::SendIPv6 ){
+      notif.status = State::SendBoth;
     }
+
   }
   puts("receive A");
   notif.cv.notify_one();
 
 
 
-  // SendIPv4WaitingAAAA, SendBoth のときに送る。
+
 
   //  WaitingAAAA ならまつ
-  if (notif.status == State::WaitingAAAA) {
+  // if (notif.status == State::WaitingAAAA) {
     // std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
-    {
-      std::unique_lock<std::mutex> lk(notif.m);
+  {
+    std::unique_lock<std::mutex> lk(notif.m);
+    if (notif.status == State::WaitingAAAA) {
       notif.cv.wait(lk, [&] { return notif.status == State::SendIPv4WaitingAAAA 
                                   || notif.status == State::WaitingBoth; });
     }
   }
 
+
+  // SendIPv4WaitingAAAA, SendBoth のときに送る。
+//  lock逆！！！
   if (notif.status == State::SendIPv4WaitingAAAA ) {
     {
       std::lock_guard<std::mutex> lk(notif.m);
         connect_to();
+        return;
     }
   }
 
-  while ( 1 ) {
 
-    {
-      std::unique_lock<std::mutex> lk(notif.m);
-      if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
-                            [&] { return notif.status == State::Connected; })) {
-        puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
-      } else {
-        puts("CONNECTION_ATTEMPT_DELAY timeout");
-        
-        if (notif.status == State::SendIPv4WaitingAAAA ) {
-          {
-            std::lock_guard<std::mutex> lk(notif.m);
-            connect_to();
-          }
-        }else if (notif.status == State::WaitingBoth){
-          if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
-                                [&] { return notif.status == State::Connected; })) {
-            puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
-          } else {
-            puts("CONNECTION_ATTEMPT_DELAY timeout");
-              connect_to();
-            }
-          }
-        }
-      }
-      break;
 
+
+  {
+    std::unique_lock<std::mutex> lk(notif.m);
+    if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
+                          [&] { return notif.status == State::Connected; })) {
+      puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
+      return;
+    } else {
+      puts("CONNECTION_ATTEMPT_DELAY timeout");
+      connect_to();
+      return;
     }
 
-    
   }
+
+}
+
 
 
 
@@ -209,8 +203,9 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
         notif.status == State::WaitingAAAA ||
         notif.status == State::SendIPv4WaitingAAAA) {
       getaddr(hostname, &notif.addrlist_IPv6, 0);
-      notif.status = State::SendIPv6;
+      // notif.status = State::SendIPv6;
 
+      // switch文に変えた方がわかりやすい。
       if (notif.status == State::WaitingBoth ) {
         notif.status = State::SendIPv6;
       }else if ( notif.status == State::WaitingAAAA ||
@@ -266,7 +261,7 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
     {
       std::unique_lock<std::mutex> lk(notif.m);
       if (notif.cv.wait_for(lk, RESOLUTION_DELAY,
-                            [&] { return notif.status == State::SendIPv6; })) {
+                            [&] { return notif.status == State::SendBoth; })) {
         puts("receive ipv6");
       } else {
         puts("timeout");
