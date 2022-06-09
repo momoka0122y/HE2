@@ -168,8 +168,14 @@ void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
     if (notif.status == State::WaitingAAAA) {
       std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
       if (notif.cv.wait_for(lk, RESOLUTION_DELAY,
-                            [&] { return notif.status == State::SendBoth; })) {
-        puts("receive ipv6");
+                            [&] { return notif.status == State::SendBoth || notif.status == State::Connected; })) {
+        switch (notif.status){
+          case State::SendBoth:
+            puts("receive ipv6");
+          case State::Connected:
+            return;
+        }
+        
       } else {
         puts("timeout");
         notif.status = State::SendIPv4WaitingAAAA;
@@ -231,7 +237,7 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
     std::unique_lock<std::mutex> lk(notif.m);
 
       puts("request AAAA");
-      if (notif.cv.wait_for(lk, waitTime,
+      if ( notif.status != State::Connected && notif.cv.wait_for(lk, waitTime,
                             [&] { return notif.status == State::Connected; })) {
         puts("ipv4 connected while waiting for AAAA");
         return;
@@ -269,7 +275,7 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   // すぐにconnect初めていい
 
   // ひとつ目にconnect
-  printf("231\n");
+  printf("ipv6 goto connect\n");
   connect_to(notif);
   return;
   // 250ms まつ、　もし SendBoth ならさらに 250msまつ。
@@ -330,10 +336,10 @@ int main(int argc, char *argv[]) {
   } else {
     hostname = "momoka.hongo.wide.ad.jp";
   }
-  puts("case 1. AAAA is fast so send ipv6 syn");
-  happyEyeball2(2000ms, 1000ms, hostname);
+  // puts("case 1. AAAA is fast so send ipv6 syn");
+  // happyEyeball2(2000ms, 1000ms, hostname);
   puts("case 2. A is fast so send ipv4 syn");
-  happyEyeball2(1000ms, 20000ms, hostname);
+  happyEyeball2(1000ms, 2000ms, hostname);
   puts("case 3. A is a little fast so wait AAAA and send ipv6 syn");
   happyEyeball2(1000ms, 1010ms, hostname);
 }
