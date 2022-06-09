@@ -85,8 +85,15 @@ void getaddr(const char *hostname, struct addrinfo **addrlist, const int isIPv4)
 }
 
 
-void connect_to() {
+void connect_to(Notification &notif) {
   printf("connect to address\n");
+  {
+    std::unique_lock<std::mutex> lk(notif.m);
+    notif.status = State::Connected;
+    notif.cv.notify_one();
+  }
+  printf("connected\n");
+  return;
 
 
   // struct addrinfo *tmp;
@@ -138,48 +145,70 @@ void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
 
   }
   puts("receive A");
-  notif.cv.notify_one();
+  notif.cv.notify_all();
 
 
 
 
 
   //  WaitingAAAA ならまつ
-  // if (notif.status == State::WaitingAAAA) {
-    // std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
+  // {
+  //   std::unique_lock<std::mutex> lk(notif.m);
+  //   if (notif.status == State::WaitingAAAA) {
+  //     printf("waiting AAAA\n");
+  //     notif.cv.wait(lk, [&] { return notif.status == State::SendIPv4WaitingAAAA 
+  //                                 || notif.status == State::SendBoth; });
+  //     printf("waiting AAAA finished\n");
+  //   }
+  // }
+
+
   {
     std::unique_lock<std::mutex> lk(notif.m);
     if (notif.status == State::WaitingAAAA) {
-      notif.cv.wait(lk, [&] { return notif.status == State::SendIPv4WaitingAAAA 
-                                  || notif.status == State::WaitingBoth; });
+      std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
+      if (notif.cv.wait_for(lk, RESOLUTION_DELAY,
+                            [&] { return notif.status == State::SendBoth; })) {
+        puts("receive ipv6");
+      } else {
+        puts("timeout");
+        notif.status = State::SendIPv4WaitingAAAA;
+        
+      }
+      notif.cv.notify_all();
     }
   }
 
 
   // SendIPv4WaitingAAAA, SendBoth のときに送る。
 //  lock逆！！！
-  if (notif.status == State::SendIPv4WaitingAAAA ) {
-    {
-      std::lock_guard<std::mutex> lk(notif.m);
-        connect_to();
-        return;
+
+  {
+    std::unique_lock<std::mutex> lk(notif.m);
+    if (notif.status == State::SendIPv4WaitingAAAA || notif.status == State::SendBoth) {
+      printf("162\n");
+      connect_to(notif);
+      return;
     }
   }
 
 
 
-
   {
     std::unique_lock<std::mutex> lk(notif.m);
-    if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
-                          [&] { return notif.status == State::Connected; })) {
-      puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
-      return;
-    } else {
-      puts("CONNECTION_ATTEMPT_DELAY timeout");
-      connect_to();
-      return;
+    if (notif.status != State::Connected){
+      if (notif.cv.wait_for(lk, CONNECTION_ATTEMPT_DELAY,
+                            [&] { return notif.status == State::Connected; })) {
+        puts("connected ipv6 while waiting for CONNECTION_ATTEMPT_DELAY");
+        return;
+      } else {
+        puts("CONNECTION_ATTEMPT_DELAY timeout");
+        printf("179\n");
+        connect_to(notif);
+        return;
+      }
     }
+
 
   }
 
@@ -195,27 +224,39 @@ void ipv4proc(Notification &notif, const std::chrono::milliseconds &waitTime,
 
 void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
               const char *hostname) {
-  puts("request AAAA");
-  std::this_thread::sleep_for(waitTime);
+
+
+
   {
-    std::lock_guard<std::mutex> lk(notif.m);
-    if (notif.status == State::WaitingBoth ||
-        notif.status == State::WaitingAAAA ||
-        notif.status == State::SendIPv4WaitingAAAA) {
-      getaddr(hostname, &notif.addrlist_IPv6, 0);
-      // notif.status = State::SendIPv6;
+    std::unique_lock<std::mutex> lk(notif.m);
 
-      // switch文に変えた方がわかりやすい。
-      if (notif.status == State::WaitingBoth ) {
-        notif.status = State::SendIPv6;
-      }else if ( notif.status == State::WaitingAAAA ||
-        notif.status == State::SendIPv4WaitingAAAA ){
-        notif.status = State::SendBoth;
-      }
-      }
+      puts("request AAAA");
+      if (notif.cv.wait_for(lk, waitTime,
+                            [&] { return notif.status == State::Connected; })) {
+        puts("ipv4 connected while waiting for AAAA");
+        return;
+      } else {
+        if (notif.status == State::WaitingBoth ||
+            notif.status == State::WaitingAAAA ||
+            notif.status == State::SendIPv4WaitingAAAA) {
+          getaddr(hostname, &notif.addrlist_IPv6, 0);
+          // notif.status = State::SendIPv6;
 
+          switch(notif.status){
+            case State::WaitingBoth:
+              notif.status = State::SendIPv6;
+            case State::WaitingAAAA:
+            case State::SendIPv4WaitingAAAA:
+              notif.status = State::SendBoth;
+          }
+        }
+        
+      }
 
   }
+
+
+
   puts("receive AAAA");
   notif.cv.notify_one();
 
@@ -228,8 +269,9 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
   // すぐにconnect初めていい
 
   // ひとつ目にconnect
-  connect_to();
-
+  printf("231\n");
+  connect_to(notif);
+  return;
   // 250ms まつ、　もし SendBoth ならさらに 250msまつ。
 
   // 次にconnect
@@ -248,27 +290,31 @@ void happyEyeball2(const std::chrono::milliseconds waitTime1,
   std::thread t1(ipv4proc, std::ref(notif), waitTime1, hostname);
   std::thread t2(ipv6proc, std::ref(notif), waitTime2, hostname);
 
-  // waiting both
-  {
-    std::unique_lock<std::mutex> lk(notif.m);
-    notif.cv.wait(lk, [&] { return notif.status != State::WaitingBoth; });
-  }
+  // // waiting both
+  // {
+  //   std::unique_lock<std::mutex> lk(notif.m);
+  //   notif.cv.wait(lk, [&] { return notif.status != State::WaitingBoth; });
+  // }
   // A is received so wait 50ms
     // WaitingAAAA             -> SendBoth : if AAAA is received
     // WaitingAAAA             -> SendIPv4WaitingAAAA : if timeout
-  if (notif.status == State::WaitingAAAA) {
-    std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
-    {
-      std::unique_lock<std::mutex> lk(notif.m);
-      if (notif.cv.wait_for(lk, RESOLUTION_DELAY,
-                            [&] { return notif.status == State::SendBoth; })) {
-        puts("receive ipv6");
-      } else {
-        puts("timeout");
-        notif.status = State::SendIPv4WaitingAAAA;
-      }
-    }
-  }
+  // {
+  //   std::unique_lock<std::mutex> lk(notif.m);
+  //   if (notif.status == State::WaitingAAAA) {
+  //     std::cout << "wait ipv6 " << RESOLUTION_DELAY.count() << "ms" << std::endl;
+  //     if (notif.cv.wait_for(lk, RESOLUTION_DELAY,
+  //                           [&] { return notif.status == State::SendBoth; })) {
+  //       puts("receive ipv6");
+  //     } else {
+  //       puts("timeout");
+  //       notif.status = State::SendIPv4WaitingAAAA;
+  //       notif.cv.notify_all();
+  //     }
+      
+  //   }
+  // }
+
+
 
 
   t1.join();
@@ -287,7 +333,7 @@ int main(int argc, char *argv[]) {
   puts("case 1. AAAA is fast so send ipv6 syn");
   happyEyeball2(2000ms, 1000ms, hostname);
   puts("case 2. A is fast so send ipv4 syn");
-  happyEyeball2(1000ms, 200000ms, hostname);
+  happyEyeball2(1000ms, 20000ms, hostname);
   puts("case 3. A is a little fast so wait AAAA and send ipv6 syn");
   happyEyeball2(1000ms, 1010ms, hostname);
 }
