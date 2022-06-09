@@ -237,7 +237,10 @@ void ipv6proc(Notification &notif, const std::chrono::milliseconds &waitTime,
     std::unique_lock<std::mutex> lk(notif.m);
 
       puts("request AAAA");
-      if ( notif.status != State::Connected && notif.cv.wait_for(lk, waitTime,
+      if (notif.status != State::Connected ){
+        return;
+      }
+      if (notif.cv.wait_for(lk, waitTime,
                             [&] { return notif.status == State::Connected; })) {
         puts("ipv4 connected while waiting for AAAA");
         return;
